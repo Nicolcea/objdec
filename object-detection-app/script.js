@@ -1,0 +1,1 @@
+<script content omitted for brevity - same as user provided></script>
