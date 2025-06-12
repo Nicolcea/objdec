@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>AI Object Detection</title>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@3.11.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+  <style>
+    body {
+      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+      background: #000;
+      color: #fff;
+      text-align: center;
+      padding: 2rem;
+    }
+    h2 {
+      color: #fff;
+    }
+    #upload, #threshold {
+      margin: 1rem auto;
+      display: block;
+    }
+    canvas {
+      border: 2px solid #555;
+      margin-top: 1rem;
+      max-width: 100%;
+      width: 800px;
+    }
+    #image-container {
+      position: relative;
+      display: inline-block;
+    }
+    #drop-area {
+      border: 2px dashed #999;
+      padding: 2rem;
+      border-radius: 10px;
+      background: #1e1e1e;
+      cursor: pointer;
+      margin: 1rem auto;
+      max-width: 500px;
+    }
+    #drop-area.hover {
+      border-color: #007BFF;
+    }
+    #controls {
+      margin-top: 1rem;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 2rem;
+    }
+    #filters, #threshold-container {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
+    #filters label,
+    #threshold-container label {
+      margin: 0.5rem 0;
+    }
+    #filters input,
+    #threshold-container input {
+      margin-bottom: 1rem;
+      width: 200px;
+    }
+    #status {
+      margin-top: 1rem;
+      color: #90ee90;
+    }
+    #classes {
+      margin-top: 1rem;
+      font-weight: bold;
+    }
+    label {
+      font-weight: bold;
+    }
+    button {
+      margin-top: 1rem;
+      padding: 0.5rem 1rem;
+      background-color: #333;
+      color: #fff;
+      border: none;
+      cursor: pointer;
+      border-radius: 5px;
+    }
+    button:hover {
+      background-color: #555;
+    }
+    #info-modal {
+      display: none;
+      position: fixed;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      background-color: #222;
+      color: white;
+      padding: 2rem;
+      border-radius: 10px;
+      max-width: 500px;
+      z-index: 1000;
+    }
+    #info-modal h3 {
+      margin-top: 0;
+    }
+    #info-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.5);
+      display: none;
+      z-index: 999;
+    }
+  </style>
+</head>
+<body>
+  <h2>Object Detection with TensorFlow.js</h2>
+
+  <div id="drop-area">
+    <p>Drag & drop an image here or click to select</p>
+    <input type="file" id="upload" accept="image/*" hidden />
+  </div>
+
+  <div id="controls">
+    <div id="threshold-container">
+      <label for="threshold">Detection Confidence: <span id="threshold-value">0.5</span></label>
+      <input type="range" id="threshold" min="0.1" max="0.9" step="0.05" value="0.5" />
+      <button id="reset-btn">Reset Parameters</button>
+      <button id="toggle-alpha">Toggle Bounding Box</button>
+      <button id="download-btn">Download Image</button>
+      <button id="info-btn">About</button>
+    </div>
+
+    <div id="filters">
+      <label for="brightness">Brightness: <span id="brightness-val">1</span></label>
+      <input type="range" id="brightness" min="0.1" max="2" step="0.1" value="1" />
+
+      <label for="contrast">Contrast: <span id="contrast-val">1</span></label>
+      <input type="range" id="contrast" min="0.1" max="2" step="0.1" value="1" />
+
+      <label for="gamma">Gamma: <span id="gamma-val">1</span></label>
+      <input type="range" id="gamma" min="0.1" max="2" step="0.1" value="1" />
+    </div>
+  </div>
+
+  <div id="image-container">
+    <canvas id="canvas"></canvas>
+  </div>
+
+  <p id="status">Waiting for image...</p>
+  <p id="classes"></p>
+
+  <div id="info-overlay"></div>
+  <div id="info-modal">
+    <h3>About This App</h3>
+    <p>This app uses TensorFlow.js and the COCO-SSD model to detect common objects in uploaded images. Adjust detection confidence and visual filters to see different effects live on the canvas. Non-detected areas can be masked using the Alpha Matte feature.</p>
+    <button onclick="closeModal()">Close</button>
+  </div>
+
+  <script>
+    const uploadInput = document.getElementById('upload');
+    const dropArea = document.getElementById('drop-area');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const statusText = document.getElementById('status');
+    const thresholdSlider = document.getElementById('threshold');
+    const thresholdValue = document.getElementById('threshold-value');
+    const classesText = document.getElementById('classes');
+
+    const brightnessSlider = document.getElementById('brightness');
+    const contrastSlider = document.getElementById('contrast');
+    const gammaSlider = document.getElementById('gamma');
+    const brightnessVal = document.getElementById('brightness-val');
+    const contrastVal = document.getElementById('contrast-val');
+    const gammaVal = document.getElementById('gamma-val');
+
+    const resetBtn = document.getElementById('reset-btn');
+    const downloadBtn = document.getElementById('download-btn');
+    const toggleAlphaBtn = document.getElementById('toggle-alpha');
+    const infoBtn = document.getElementById('info-btn');
+
+    let model;
+    let detectionThreshold = 0.5;
+    let imgBitmap;
+    let useAlphaMask = false;
+
+    cocoSsd.load().then(loadedModel => {
+      model = loadedModel;
+      statusText.innerText = 'Model loaded. Drop or upload an image.';
+    });
+
+    function applyFiltersAndDetect() {
+      if (!imgBitmap) return;
+      canvas.width = imgBitmap.width;
+      canvas.height = imgBitmap.height;
+
+      const brightness = parseFloat(brightnessSlider.value);
+      const contrast = parseFloat(contrastSlider.value);
+      const gamma = parseFloat(gammaSlider.value);
+
+      brightnessVal.innerText = brightness;
+      contrastVal.innerText = contrast;
+      gammaVal.innerText = gamma;
+
+      ctx.filter = `brightness(${brightness}) contrast(${contrast}) saturate(1) grayscale(0)`;
+      ctx.drawImage(imgBitmap, 0, 0);
+
+      detectObjects();
+    }
+
+    thresholdSlider.addEventListener('input', () => {
+      detectionThreshold = 1.0 - parseFloat(thresholdSlider.value);
+      thresholdValue.innerText = (1.0 - detectionThreshold).toFixed(2);
+      applyFiltersAndDetect();
+    });
+
+    resetBtn.addEventListener('click', () => {
+      brightnessSlider.value = contrastSlider.value = gammaSlider.value = 1;
+      thresholdSlider.value = 0.5;
+      detectionThreshold = 0.5;
+      brightnessVal.innerText = contrastVal.innerText = gammaVal.innerText = '1';
+      thresholdValue.innerText = '0.5';
+      useAlphaMask = false;
+      applyFiltersAndDetect();
+    });
+
+    downloadBtn.addEventListener('click', () => {
+      const link = document.createElement('a');
+      link.download = 'annotated_image.png';
+      link.href = canvas.toDataURL();
+      link.click();
+    });
+
+    toggleAlphaBtn.addEventListener('click', () => {
+      useAlphaMask = !useAlphaMask;
+      applyFiltersAndDetect();
+    });
+
+    infoBtn.addEventListener('click', () => {
+      document.getElementById('info-overlay').style.display = 'block';
+      document.getElementById('info-modal').style.display = 'block';
+    });
+
+    function closeModal() {
+      document.getElementById('info-overlay').style.display = 'none';
+      document.getElementById('info-modal').style.display = 'none';
+    }
+
+    brightnessSlider.addEventListener('input', applyFiltersAndDetect);
+    contrastSlider.addEventListener('input', applyFiltersAndDetect);
+    gammaSlider.addEventListener('input', applyFiltersAndDetect);
+
+    ['dragenter', 'dragover'].forEach(event => {
+      dropArea.addEventListener(event, e => {
+        e.preventDefault();
+        dropArea.classList.add('hover');
+      });
+    });
+    ['dragleave', 'drop'].forEach(event => {
+      dropArea.addEventListener(event, e => {
+        e.preventDefault();
+        dropArea.classList.remove('hover');
+      });
+    });
+
+    dropArea.addEventListener('click', () => uploadInput.click());
+    dropArea.addEventListener('drop', e => handleFiles(e.dataTransfer.files));
+    uploadInput.addEventListener('change', e => handleFiles(e.target.files));
+
+    function handleFiles(files) {
+      const file = files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function (e) {
+        const img = new Image();
+        img.onload = function () {
+          imgBitmap = img;
+          applyFiltersAndDetect();
+        };
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    async function detectObjects() {
+      if (!model || !imgBitmap) return;
+      const predictions = await model.detect(canvas);
+
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const alphaData = new Uint8ClampedArray(imageData.data);
+
+      let count = 0;
+      const classes = [];
+
+      predictions.forEach(pred => {
+        if (pred.score >= detectionThreshold) {
+          ctx.beginPath();
+          ctx.rect(...pred.bbox);
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = 'red';
+          ctx.fillStyle = 'red';
+          ctx.stroke();
+          ctx.fillText(pred.class + ' (' + (pred.score * 100).toFixed(1) + '%)', pred.bbox[0], pred.bbox[1] > 10 ? pred.bbox[1] - 5 : 10);
+          count++;
+          if (!classes.includes(pred.class)) {
+            classes.push(pred.class);
+          }
+        }
+      });
+
+      if (useAlphaMask) {
+        predictions.forEach(pred => {
+          if (pred.score < detectionThreshold) {
+            const [x, y, width, height] = pred.bbox.map(Math.floor);
+            for (let i = y; i < y + height; i++) {
+              for (let j = x; j < x + width; j++) {
+                const index = (i * canvas.width + j) * 4;
+                alphaData[index + 3] = 100;
+              }
+            }
+          }
+        });
+        ctx.putImageData(new ImageData(alphaData, canvas.width, canvas.height), 0, 0);
+      }
+
+      statusText.innerText = `Detection complete: ${count} object(s) detected.`;
+      classesText.innerText = `Detected Classes (${classes.length}): ` + classes.join(', ');
+    }
+  </script>
+</body>
+</html>
